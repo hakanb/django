@@ -7,6 +7,13 @@ from __future__ import absolute_import
 import datetime
 from itertools import repeat
 
+from django.conf import settings
+from django.db.models.fields import DateTimeField, Field
+from django.db.models.sql.datastructures import EmptyResultSet, Empty
+from django.db.models.sql.aggregates import Aggregate
+from django.db.models.query_utils import QueryWrapper
+from django.utils.six.moves import xrange
+from django.utils import timezone
 from django.utils import tree
 from django.db.models.fields import Field
 from django.db.models.sql.datastructures import EmptyResultSet, FullResultSet
@@ -40,9 +47,10 @@ class WhereNode(tree.Node):
         """
         Add a node to the where-tree. If the data is a list or tuple, it is
         expected to be of the form (obj, lookup_type, value), where obj is
-        a Constraint object, and is then slightly munged before being stored
-        (to avoid storing any reference to field objects). Otherwise, the 'data'
-        is stored unchanged and can be any class with an 'as_sql()' method.
+        a Constraint, an Aggregate or a QueryWrapper object, and is then slightly
+        munged before being stored (to avoid storing any reference to field
+        objects). Otherwise, the 'data' is stored unchanged and can be any
+        class with an 'as_sql()' method.
         """
         if not isinstance(data, (list, tuple)):
             super(WhereNode, self).add(data, connector)
@@ -58,8 +66,9 @@ class WhereNode(tree.Node):
         # about the value(s) to the query construction. Specifically, datetime
         # and empty values need special handling. Other types could be used
         # here in the future (using Python types is suggested for consistency).
-        if isinstance(value, datetime.datetime):
-            value_annotation = datetime.datetime
+        if not isinstance(obj, QueryWrapper) and (isinstance(value, datetime.datetime)
+                or (isinstance(obj.field, DateTimeField) and lookup_type != 'isnull')):
+                value_annotation = datetime.datetime
         elif hasattr(value, 'value_annotation'):
             value_annotation = value.value_annotation
         else:
@@ -132,7 +141,7 @@ class WhereNode(tree.Node):
         Turn a tuple (Constraint(table_alias, column_name, db_type),
         lookup_type, value_annotation, params) into valid SQL.
 
-        The first item of the tuple may also be an Aggregate.
+        The first item of the tuple may also be an Aggregate or QueryWrapper.
 
         Returns the string for the SQL fragment and the parameters to use for
         it.
@@ -145,6 +154,9 @@ class WhereNode(tree.Node):
                 raise EmptyResultSet
         elif isinstance(lvalue, Aggregate):
             params = lvalue.field.get_db_prep_lookup(lookup_type, params_or_value, connection)
+        elif isinstance(lvalue, QueryWrapper):
+            params = Field().get_db_prep_lookup(lookup_type, params_or_value,
+                    connection=connection, prepared=True)
         else:
             raise TypeError("'make_atom' expects a Constraint or an Aggregate "
                             "as the first item of its 'child' argument.")
